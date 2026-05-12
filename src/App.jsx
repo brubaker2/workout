@@ -1,6 +1,6 @@
-import React, { useState, useMemo, useEffect } from 'react';
-import { XAxis, YAxis, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, BarChart, Bar, Cell, ReferenceLine } from 'recharts';
-import { Activity, Zap, Flame, BarChart3, Settings, Sparkles, Minus, Plus, RotateCcw, Eye, X, Footprints } from 'lucide-react';
+import React, { useState, useMemo, useEffect, useRef } from 'react';
+import { XAxis, YAxis, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, BarChart, Bar, Cell } from 'recharts';
+import { Activity, Zap, Flame, BarChart3, Settings, Sparkles, Minus, Plus, RotateCcw, Eye, X, Camera, Trash2 } from 'lucide-react';
 import localforage from 'localforage';
 
 // ============================================================
@@ -17,6 +17,24 @@ localforage.config({
 const STORAGE_KEYS = {
   overrides: 'weight-overrides',
   bodyweight: 'bodyweight',
+  sex: 'sex',
+  birthdate: 'birthdate',
+  avatar: 'avatar',
+};
+
+// Default birthdate: Feb 25, 2000 (yields age 26 in 2026)
+const DEFAULT_BIRTHDATE = '2000-02-25';
+
+// Compute age in years from a YYYY-MM-DD birthdate string
+const ageFromBirthdate = (bd) => {
+  if (!bd) return null;
+  const birth = new Date(bd + 'T00:00:00');
+  if (isNaN(birth.getTime())) return null;
+  const now = new Date();
+  let age = now.getFullYear() - birth.getFullYear();
+  const m = now.getMonth() - birth.getMonth();
+  if (m < 0 || (m === 0 && now.getDate() < birth.getDate())) age--;
+  return age;
 };
 
 // ============================================================
@@ -76,11 +94,12 @@ const parseWeight = (weightStr) => {
   return { weight, isBodyweight, perSide };
 };
 
-// New lift.txt content
+// Lift library
 const RAW = `T bar row (3 x 8-10) - 115
 Goblet Squat (3 x 8-10) - 75
 Goodmorning (3 x 8-10) - 80
 Tricep press down (3 x 8-10) - 70
+Skull Crusher (3 x 8-10) - 65
 
 DB fly (3 x 8-10) - 40
 Split squat (3 x 8) - 50s
@@ -111,10 +130,10 @@ Full ROM Side raises (3 x 8-12) - 10s
 Db hammer curls (3 x 8-12) - 20s 
 
 Standing Lat Pulldown (3 x 8-10) - 120
-Goodmornings (3 x 8-10) - 75
+Goodmorning (3 x 8-10) - 75
 
 cable row (3 x 8-12) - 115
-Goodmornings (3 x 8-12)- 75
+Goodmorning (3 x 8-12)- 75
 Machine dips (3 x 8-12) - 135
 
 Heel elevated Goblet Squat (3 x 8-12) - 65
@@ -188,7 +207,9 @@ const classifyExercise = (name) => {
   return { primary: 'other', body: 'upper' };
 };
 
-const STANDARDS = {
+// Male strength standards (lbs/bodyweight ratios for major lifts)
+// Sources: ExRx norms, Symmetric Strength dataset, Stronger By Science
+const STANDARDS_M = {
   chest: { novice: 0.75, intermediate: 1.10, advanced: 1.50, elite: 1.90 },
   back: { novice: 0.65, intermediate: 1.00, advanced: 1.40, elite: 1.80 },
   quads: { novice: 0.90, intermediate: 1.40, advanced: 1.90, elite: 2.40 },
@@ -197,6 +218,25 @@ const STANDARDS = {
   triceps: { novice: 0.30, intermediate: 0.50, advanced: 0.70, elite: 0.95 },
   biceps: { novice: 0.25, intermediate: 0.40, advanced: 0.55, elite: 0.75 },
 };
+
+// Female strength standards — roughly 60-70% of male thresholds depending
+// on the lift. Lower-body ratios are closer to male values than upper-body.
+// Sources: same as above (ExRx, Symmetric Strength, Stronger By Science).
+const STANDARDS_F = {
+  chest: { novice: 0.40, intermediate: 0.65, advanced: 0.90, elite: 1.20 },
+  back: { novice: 0.40, intermediate: 0.65, advanced: 0.90, elite: 1.20 },
+  quads: { novice: 0.65, intermediate: 1.05, advanced: 1.50, elite: 1.90 },
+  hamstrings: { novice: 0.55, intermediate: 0.90, advanced: 1.30, elite: 1.70 },
+  shoulders: { novice: 0.25, intermediate: 0.40, advanced: 0.60, elite: 0.80 },
+  triceps: { novice: 0.18, intermediate: 0.30, advanced: 0.45, elite: 0.65 },
+  biceps: { novice: 0.15, intermediate: 0.25, advanced: 0.40, elite: 0.55 },
+};
+
+// Resolve which standards table to use based on user's sex selection
+const getStandards = (sex) => (sex === 'female' ? STANDARDS_F : STANDARDS_M);
+
+// Backwards-compat alias for the body-tier-thresholds display
+const STANDARDS = STANDARDS_M;
 
 const tierFromRatio = (ratio, std) => {
   if (ratio >= std.elite) return { tier: 'Elite', score: 100 };
@@ -235,6 +275,9 @@ const machineFactor = (name) => {
 export default function App() {
   const [tab, setTab] = useState('home');
   const [bodyweight, setBodyweight] = useState(190);
+  const [sex, setSex] = useState('male');               // 'male' | 'female'
+  const [birthdate, setBirthdate] = useState(DEFAULT_BIRTHDATE);
+  const [avatar, setAvatar] = useState(null);           // base64 data URL or null
   // Per-exercise weight overrides keyed by nameKey.
   // When the user updates a weight on the Generate tab, we store the new
   // raw value here. bestLifts / muscleScores read overrides first, then
@@ -254,10 +297,16 @@ export default function App() {
     Promise.all([
       localforage.getItem(STORAGE_KEYS.overrides),
       localforage.getItem(STORAGE_KEYS.bodyweight),
-    ]).then(([savedOverrides, savedBW]) => {
+      localforage.getItem(STORAGE_KEYS.sex),
+      localforage.getItem(STORAGE_KEYS.birthdate),
+      localforage.getItem(STORAGE_KEYS.avatar),
+    ]).then(([savedOverrides, savedBW, savedSex, savedBD, savedAvatar]) => {
       if (cancelled) return;
       if (savedOverrides && typeof savedOverrides === 'object') setWeightOverrides(savedOverrides);
       if (typeof savedBW === 'number' && savedBW > 0) setBodyweight(savedBW);
+      if (savedSex === 'male' || savedSex === 'female') setSex(savedSex);
+      if (typeof savedBD === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(savedBD)) setBirthdate(savedBD);
+      if (typeof savedAvatar === 'string' && savedAvatar.startsWith('data:')) setAvatar(savedAvatar);
       setHydrated(true);
     }).catch(() => {
       // Storage unavailable (e.g. running in Claude artifact sandbox) — proceed in-memory
@@ -277,6 +326,15 @@ export default function App() {
     if (!hydrated) return;
     localforage.setItem(STORAGE_KEYS.bodyweight, bodyweight).catch(() => {});
   }, [bodyweight, hydrated]);
+
+  // Persist sex / birthdate / avatar
+  useEffect(() => { if (hydrated) localforage.setItem(STORAGE_KEYS.sex, sex).catch(() => {}); }, [sex, hydrated]);
+  useEffect(() => { if (hydrated) localforage.setItem(STORAGE_KEYS.birthdate, birthdate).catch(() => {}); }, [birthdate, hydrated]);
+  useEffect(() => {
+    if (!hydrated) return;
+    if (avatar === null) localforage.removeItem(STORAGE_KEYS.avatar).catch(() => {});
+    else localforage.setItem(STORAGE_KEYS.avatar, avatar).catch(() => {});
+  }, [avatar, hydrated]);
 
   const updateWeight = (name, newWeight) => {
     setWeightOverrides(prev => ({ ...prev, [nameKey(name)]: newWeight }));
@@ -317,16 +375,18 @@ export default function App() {
     // Compute per-lift strength score (0-100) using the lift's primary muscle's
     // tier thresholds. This gives every individual lift a scored value so we
     // can rank them best→worst regardless of muscle group.
+    const stds = getStandards(sex);
     return Object.values(map).map(lift => {
       const m = lift.muscle.primary;
-      if (m === 'other' || !STANDARDS[m]) return { ...lift, liftScore: null };
+      if (m === 'other' || !stds[m]) return { ...lift, liftScore: null };
       const ratio = lift.e1rm / bodyweight;
-      const t = tierFromRatio(ratio, STANDARDS[m]);
+      const t = tierFromRatio(ratio, stds[m]);
       return { ...lift, liftScore: t.score, liftTier: t.tier, liftRatio: ratio };
     });
-  }, [bodyweight, weightOverrides]);
+  }, [bodyweight, weightOverrides, sex]);
 
   const muscleScores = useMemo(() => {
+    const stds = getStandards(sex);
     const groups = {};
     bestLifts.forEach(lift => {
       const m = lift.muscle.primary;
@@ -336,15 +396,15 @@ export default function App() {
       groups[m].push(ratio);
     });
     const scores = {};
-    for (const m of Object.keys(STANDARDS)) {
+    for (const m of Object.keys(stds)) {
       const ratios = groups[m] || [];
       if (ratios.length === 0) { scores[m] = { score: 0, tier: 'Untested', ratio: 0 }; continue; }
       const best = Math.max(...ratios);
-      const t = tierFromRatio(best, STANDARDS[m]);
+      const t = tierFromRatio(best, stds[m]);
       scores[m] = { ...t, ratio: best };
     }
     return scores;
-  }, [bestLifts, bodyweight]);
+  }, [bestLifts, bodyweight, sex]);
 
   const overallScore = useMemo(() => {
     const vals = Object.values(muscleScores).map(s => s.score).filter(s => s > 0);
@@ -372,23 +432,34 @@ export default function App() {
         <header className="px-5 pt-12 pb-4 sticky top-0 glass z-10">
           <div className="flex items-baseline justify-between">
             <div>
-              <p className="text-xs font-semibold tracking-wider uppercase" style={{color:'#FF375F'}}>Thursday · May 7</p>
+              <p className="text-xs font-semibold tracking-wider uppercase" style={{color:'#FF375F'}}>
+                {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
+              </p>
               <h1 className="text-3xl font-bold tracking-tight" style={{color:'#1d1d1f', letterSpacing:'-0.02em'}}>
-                {tab === 'home' ? 'Strength' : tab === 'generate' ? 'Generate' : tab === 'cardio' ? 'Cardio' : tab === 'charts' ? 'Insights' : 'Profile'}
+                {tab === 'home' ? 'Strength' : tab === 'generate' ? 'Generate' : tab === 'charts' ? 'Insights' : 'Profile'}
               </h1>
             </div>
-            <div className="w-9 h-9 rounded-full flex items-center justify-center" style={{background:'linear-gradient(135deg,#FF375F,#FF9500)'}}>
-              <span className="text-white font-bold text-sm">SC</span>
-            </div>
+            <button onClick={() => setTab('profile')} className="haptic w-9 h-9 rounded-full flex items-center justify-center overflow-hidden flex-shrink-0" style={{background: avatar ? 'transparent' : 'linear-gradient(135deg,#FF375F,#FF9500)'}}>
+              {avatar
+                ? <img src={avatar} alt="" className="w-full h-full object-cover" />
+                : <span className="text-white font-bold text-sm">{sex === 'female' ? 'SF' : 'SC'}</span>
+              }
+            </button>
           </div>
         </header>
 
         <main className="px-5 pt-3 space-y-4">
           {tab === 'home' && <HomeView overall={overallScore} muscleScores={muscleScores} bestLifts={bestLifts} bodyweight={bodyweight} />}
           {tab === 'generate' && <GenerateView updateWeight={updateWeight} weightOverrides={weightOverrides} workout={workout} setWorkout={setWorkout} />}
-          {tab === 'cardio' && <CardioView />}
           {tab === 'charts' && <ChartsView muscleScores={muscleScores} />}
-          {tab === 'profile' && <ProfileView bodyweight={bodyweight} setBodyweight={setBodyweight} weightOverrides={weightOverrides} setWeightOverrides={setWeightOverrides} hydrated={hydrated} />}
+          {tab === 'profile' && <ProfileView
+            bodyweight={bodyweight} setBodyweight={setBodyweight}
+            sex={sex} setSex={setSex}
+            birthdate={birthdate} setBirthdate={setBirthdate}
+            avatar={avatar} setAvatar={setAvatar}
+            weightOverrides={weightOverrides} setWeightOverrides={setWeightOverrides}
+            hydrated={hydrated}
+          />}
         </main>
 
         <nav className="fixed bottom-0 left-0 right-0 glass border-t border-black/5">
@@ -396,7 +467,6 @@ export default function App() {
             {[
               { id:'home', icon: Activity, label:'Today' },
               { id:'generate', icon: Sparkles, label:'Generate' },
-              { id:'cardio', icon: Footprints, label:'Cardio' },
               { id:'charts', icon: BarChart3, label:'Insights' },
               { id:'profile', icon: Settings, label:'Profile' },
             ].map(t => {
@@ -1243,175 +1313,6 @@ function Stepper({ label, value, unit, onMinus, onPlus, color }) {
 }
 
 // ============================================================
-// CARDIO VIEW — steps from API (with mock fallback)
-// ============================================================
-//
-// Data flow:
-//   1. iOS Shortcut runs daily, POSTs yesterday's step count to
-//      /api/steps with the SHORTCUT_SECRET header.
-//   2. The endpoint stores it in Vercel KV keyed by date.
-//   3. This view fetches /api/steps-read on mount, which returns
-//      the last 7 days + 28-day average + today's count.
-//   4. While you're still setting up the Shortcut (or if the API
-//      is unreachable), falls back to deterministic mock data so
-//      the UI is never empty.
-
-const STEP_GOAL = 10000;
-
-// Deterministic mock so the UI looks realistic before real data lands
-const mockSteps = (date) => {
-  const day = date.getDay();
-  const base = day === 0 || day === 6 ? 7200 : 9400;
-  const seed = date.getFullYear() * 372 + (date.getMonth() + 1) * 31 + date.getDate();
-  const noise = ((seed * 9301 + 49297) % 233280) / 233280;
-  return Math.round(base + (noise - 0.5) * 3200);
-};
-
-const buildMockData = () => {
-  const today = new Date();
-  today.setHours(0, 0, 0, 0);
-  const last7 = [];
-  for (let i = 7; i >= 1; i--) {
-    const d = new Date(today);
-    d.setDate(d.getDate() - i);
-    last7.push({ date: d.toISOString().slice(0,10), steps: mockSteps(d) });
-  }
-  let sum = 0;
-  for (let i = 28; i >= 1; i--) {
-    const d = new Date(today);
-    d.setDate(d.getDate() - i);
-    sum += mockSteps(d);
-  }
-  return { last7, avg28: Math.round(sum / 28), today: mockSteps(today), source: 'mock' };
-};
-
-function CardioView() {
-  const [data, setData] = useState(null);
-  const [error, setError] = useState(null);
-
-  useEffect(() => {
-    let cancelled = false;
-    fetch('/api/steps-read')
-      .then(r => r.ok ? r.json() : Promise.reject(new Error(`HTTP ${r.status}`)))
-      .then(json => {
-        if (cancelled) return;
-        // Only trust the API response if it actually has data
-        if (json.daysWithData > 0 || json.today > 0) {
-          setData({ ...json, source: 'api' });
-        } else {
-          setData(buildMockData());
-          setError('No real data yet — showing mock');
-        }
-      })
-      .catch(err => {
-        if (cancelled) return;
-        setData(buildMockData());
-        setError(`API unavailable (${err.message}) — showing mock`);
-      });
-    return () => { cancelled = true; };
-  }, []);
-
-  if (!data) {
-    return (
-      <div className="card p-6 text-center" style={{animationDelay:'0ms'}}>
-        <p className="text-sm" style={{color:'#86868b'}}>Loading steps…</p>
-      </div>
-    );
-  }
-
-  const chartData = data.last7.map(d => {
-    const date = new Date(d.date + 'T00:00:00');
-    return {
-      day: date.toLocaleDateString('en-US', { weekday: 'short' }),
-      fullDate: date.toLocaleDateString('en-US', { month: 'short', day: 'numeric' }),
-      steps: d.steps,
-    };
-  });
-
-  const todayHitGoal = data.today >= STEP_GOAL;
-  const todayProgress = Math.min(100, (data.today / STEP_GOAL) * 100);
-
-  return (
-    <>
-      <div className="card p-6" style={{animationDelay:'0ms'}}>
-        <div className="flex items-center gap-4 mb-4">
-          <div className="w-14 h-14 rounded-2xl flex items-center justify-center" style={{background:'linear-gradient(135deg,#FF375F,#FF9500)'}}>
-            <Footprints size={28} color="white" strokeWidth={2.2} />
-          </div>
-          <div className="flex-1">
-            <p className="text-xs font-semibold uppercase tracking-wider" style={{color:'#86868b'}}>Today's Steps</p>
-            <p className="text-5xl font-bold tabular-nums leading-none mt-1" style={{color:'#1d1d1f', letterSpacing:'-0.03em'}}>
-              {data.today.toLocaleString()}
-            </p>
-          </div>
-        </div>
-        <div className="flex items-center justify-between text-xs mb-1.5" style={{color:'#86868b'}}>
-          <span>Goal · {STEP_GOAL.toLocaleString()}</span>
-          <span className="font-semibold" style={{color: todayHitGoal ? '#34C759' : '#FF375F'}}>
-            {todayHitGoal ? '✓ Goal hit' : `${Math.round(todayProgress)}%`}
-          </span>
-        </div>
-        <div className="h-1.5 rounded-full overflow-hidden" style={{background:'#F5F5F7'}}>
-          <div className="h-full rounded-full transition-all duration-700" style={{
-            width: `${todayProgress}%`,
-            background: todayHitGoal ? 'linear-gradient(90deg,#34C759,#30D158)' : 'linear-gradient(90deg,#FF375F,#FF9500)',
-          }} />
-        </div>
-      </div>
-
-      <div className="card p-5" style={{animationDelay:'80ms'}}>
-        <div className="flex items-baseline justify-between mb-1">
-          <p className="text-xs font-semibold uppercase tracking-wider" style={{color:'#86868b'}}>Last 7 Days</p>
-          <p className="text-xs" style={{color:'#86868b'}}>through yesterday</p>
-        </div>
-        <div className="flex items-baseline justify-between mb-4">
-          <p className="text-2xl font-bold tabular-nums" style={{color:'#1d1d1f'}}>
-            {Math.round(chartData.reduce((a,b) => a + b.steps, 0) / 7).toLocaleString()}
-            <span className="text-sm font-normal ml-1" style={{color:'#86868b'}}>avg / day</span>
-          </p>
-        </div>
-        <ResponsiveContainer width="100%" height={200}>
-          <BarChart data={chartData} margin={{top: 5, right: 5, left: -10, bottom: 0}}>
-            <defs>
-              <linearGradient id="stepBarGrad" x1="0" y1="0" x2="0" y2="1">
-                <stop offset="0%" stopColor="#FF375F" />
-                <stop offset="100%" stopColor="#FF9500" />
-              </linearGradient>
-            </defs>
-            <XAxis dataKey="day" tick={{fontSize:11, fill:'#86868b', fontWeight:500}} axisLine={false} tickLine={false} />
-            <YAxis tick={{fontSize:10, fill:'#86868b'}} axisLine={false} tickLine={false} width={40} tickFormatter={v => v >= 1000 ? `${v/1000}k` : v} />
-            <Tooltip
-              contentStyle={{borderRadius:12, border:'none', boxShadow:'0 4px 16px rgba(0,0,0,0.1)', fontSize:12}}
-              formatter={(value) => [value.toLocaleString() + ' steps', '']}
-              labelFormatter={(_, payload) => payload && payload[0] ? payload[0].payload.fullDate : ''}
-            />
-            <Bar dataKey="steps" fill="url(#stepBarGrad)" radius={[6, 6, 0, 0]} />
-            <ReferenceLine y={data.avg28} stroke="#5856D6" strokeWidth={2} strokeDasharray="4 4" ifOverflow="extendDomain"
-              label={{ value: `28-day avg · ${data.avg28.toLocaleString()}`, position: 'insideTopRight', fill:'#5856D6', fontSize: 10, fontWeight: 600 }} />
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
-
-      {data.source === 'mock' && (
-        <div className="card p-4" style={{animationDelay:'160ms', background:'#FFF8E7'}}>
-          <p className="text-xs leading-relaxed" style={{color:'#8A6800'}}>
-            <strong>Mock data.</strong> {error || 'Set up the iOS Shortcut to start sending real step counts to your /api/steps endpoint.'}
-          </p>
-        </div>
-      )}
-      {data.source === 'api' && data.daysWithData < 7 && (
-        <div className="card p-4" style={{animationDelay:'160ms', background:'#E8F1FB'}}>
-          <p className="text-xs leading-relaxed" style={{color:'#0040DD'}}>
-            <strong>Building history.</strong> {data.daysWithData} of 28 days logged so far. The chart and averages will fill in as the iOS Shortcut runs each morning.
-          </p>
-        </div>
-      )}
-    </>
-  );
-}
-
-
-// ============================================================
 // CHARTS VIEW
 // ============================================================
 function ChartsView({ muscleScores }) {
@@ -1458,29 +1359,105 @@ function ChartsView({ muscleScores }) {
 // ============================================================
 // PROFILE VIEW
 // ============================================================
-function ProfileView({ bodyweight, setBodyweight, weightOverrides, setWeightOverrides, hydrated }) {
+function ProfileView({ bodyweight, setBodyweight, sex, setSex, birthdate, setBirthdate, avatar, setAvatar, weightOverrides, setWeightOverrides, hydrated }) {
   const [confirmReset, setConfirmReset] = useState(false);
+  const [uploadError, setUploadError] = useState(null);
+  const fileInputRef = useRef(null);
   const overrideCount = Object.keys(weightOverrides || {}).length;
+  const age = ageFromBirthdate(birthdate);
 
   const reset = () => {
     setWeightOverrides({});
     setConfirmReset(false);
   };
 
+  // Handle avatar upload: read file, resize to a square 240×240 thumbnail
+  // via canvas to keep storage small (avoids blowing past IndexedDB quotas).
+  const handleAvatarUpload = (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setUploadError(null);
+    if (!file.type.startsWith('image/')) {
+      setUploadError('Please choose an image file');
+      return;
+    }
+    const reader = new FileReader();
+    reader.onload = (ev) => {
+      const img = new Image();
+      img.onload = () => {
+        // Center-crop to square, scale to 240×240, JPEG-encode at 0.85 quality
+        const size = 240;
+        const canvas = document.createElement('canvas');
+        canvas.width = size;
+        canvas.height = size;
+        const ctx = canvas.getContext('2d');
+        const minDim = Math.min(img.width, img.height);
+        const sx = (img.width - minDim) / 2;
+        const sy = (img.height - minDim) / 2;
+        ctx.drawImage(img, sx, sy, minDim, minDim, 0, 0, size, size);
+        const dataUrl = canvas.toDataURL('image/jpeg', 0.85);
+        setAvatar(dataUrl);
+      };
+      img.onerror = () => setUploadError('Could not decode that image');
+      img.src = ev.target.result;
+    };
+    reader.onerror = () => setUploadError('Could not read the file');
+    reader.readAsDataURL(file);
+  };
+
   return (
     <>
-      <div className="card p-5" style={{animationDelay:'0ms'}}>
+      {/* AVATAR CARD */}
+      <div className="card p-5 flex items-center gap-4" style={{animationDelay:'0ms'}}>
+        <div className="relative">
+          <div className="w-20 h-20 rounded-full overflow-hidden flex items-center justify-center" style={{background: avatar ? 'transparent' : 'linear-gradient(135deg,#FF375F,#FF9500)'}}>
+            {avatar
+              ? <img src={avatar} alt="Profile" className="w-full h-full object-cover" />
+              : <Camera size={28} color="white" strokeWidth={2} />
+            }
+          </div>
+        </div>
+        <div className="flex-1 min-w-0">
+          <p className="text-xs font-semibold uppercase tracking-wider" style={{color:'#86868b'}}>Profile Picture</p>
+          <p className="text-sm mt-0.5" style={{color:'#86868b'}}>{avatar ? 'Tap to change' : 'Upload a selfie'}</p>
+          <div className="flex gap-2 mt-2">
+            <button onClick={() => fileInputRef.current?.click()} className="haptic px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1" style={{background:'#F5F5F7', color:'#FF375F'}}>
+              <Camera size={12} strokeWidth={2.5} /> {avatar ? 'Change' : 'Upload'}
+            </button>
+            {avatar && (
+              <button onClick={() => setAvatar(null)} className="haptic px-3 py-1.5 rounded-full text-xs font-semibold flex items-center gap-1" style={{background:'#F5F5F7', color:'#86868b'}}>
+                <Trash2 size={12} strokeWidth={2.5} /> Remove
+              </button>
+            )}
+          </div>
+          <input ref={fileInputRef} type="file" accept="image/*" onChange={handleAvatarUpload} className="hidden" />
+          {uploadError && <p className="text-xs mt-1.5" style={{color:'#FF3B30'}}>{uploadError}</p>}
+        </div>
+      </div>
+
+      {/* PROFILE FIELDS */}
+      <div className="card p-5" style={{animationDelay:'60ms'}}>
         <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{color:'#86868b'}}>Profile</p>
         <Row label="Body Weight">
           <input type="number" value={bodyweight} onChange={e=>setBodyweight(parseFloat(e.target.value)||190)} className="w-20 text-right tabular-nums font-medium bg-transparent outline-none" style={{color:'#FF375F'}} />
           <span className="text-sm ml-1" style={{color:'#86868b'}}>lb</span>
         </Row>
-        <Row label="Sex"><span className="text-sm" style={{color:'#86868b'}}>Male</span></Row>
-        <Row label="Age"><span className="text-sm" style={{color:'#86868b'}}>26</span></Row>
+        <Row label="Sex">
+          <SegmentedControl
+            value={sex}
+            onChange={setSex}
+            options={[{value:'male', label:'Male'}, {value:'female', label:'Female'}]}
+          />
+        </Row>
+        <Row label="Birthday">
+          <input type="date" value={birthdate} onChange={e=>setBirthdate(e.target.value || DEFAULT_BIRTHDATE)} max={new Date().toISOString().slice(0,10)}
+            className="text-right tabular-nums font-medium bg-transparent outline-none" style={{color:'#FF375F', fontSize:'14px'}} />
+        </Row>
+        <Row label="Age"><span className="text-sm tabular-nums" style={{color:'#86868b'}}>{age != null ? age : '—'}</span></Row>
         <Row label="Units"><span className="text-sm" style={{color:'#86868b'}}>Imperial</span></Row>
       </div>
 
-      <div className="card p-5" style={{animationDelay:'60ms'}}>
+      <div className="card p-5" style={{animationDelay:'120ms'}}>
         <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{color:'#86868b'}}>Storage</p>
         <Row label="Status">
           <span className="text-xs px-2 py-0.5 rounded-full" style={{background: hydrated?'#E8F8EE':'#FFF8E7', color: hydrated?'#34C759':'#8A6800'}}>
@@ -1507,11 +1484,11 @@ function ProfileView({ bodyweight, setBodyweight, weightOverrides, setWeightOver
           </div>
         )}
         <p className="text-xs mt-3 leading-relaxed" style={{color:'#86868b'}}>
-          Weight updates and your bodyweight are saved in your browser's IndexedDB and persist across sessions. Reset reverts all weights back to their original lift.txt values.
+          Weight updates, profile fields, and your photo are saved in your browser's IndexedDB and persist across sessions. Reset reverts all weights back to their original library values.
         </p>
       </div>
 
-      <div className="card p-5" style={{animationDelay:'120ms'}}>
+      <div className="card p-5" style={{animationDelay:'180ms'}}>
         <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{color:'#86868b'}}>The Science</p>
         <p className="text-sm leading-relaxed mb-2" style={{color:'#424245'}}>
           Strength scores use the average of two validated 1RM equations:
@@ -1521,15 +1498,41 @@ function ProfileView({ bodyweight, setBodyweight, weightOverrides, setWeightOver
           <p className="text-xs" style={{color:'#86868b'}}>• <strong style={{color:'#1d1d1f'}}>Brzycki (1993)</strong>: 1RM = w × 36/(37 − r)</p>
         </div>
         <p className="text-sm leading-relaxed mt-3" style={{color:'#424245'}}>
-          Body-part scores compare your best estimated 1RM (normalized to bodyweight) against published tier thresholds from ExRx, Symmetric Strength, and Stronger By Science. DiStasio (2014) found these formulas predict actual 1RMs within 2-4% in the 3-8 rep range.
+          Body-part scores compare your best estimated 1RM (normalized to bodyweight) against published tier thresholds from ExRx, Symmetric Strength, and Stronger By Science. Standards differ by sex — female thresholds run roughly 60–70% of male thresholds across most lifts. DiStasio (2014) found these formulas predict actual 1RMs within 2–4% in the 3–8 rep range.
         </p>
         <p className="text-sm leading-relaxed mt-3" style={{color:'#424245'}}>
           Machine lifts are discounted before scoring (leg press ×0.45, bicep machine ×0.55, fly machine ×0.65, lat pulldown ×0.85) since the strength standards are calibrated to free-weight movements. Without this, machine numbers — which inflate due to leverage and assistance — would overstate true strength.
         </p>
       </div>
 
-      <p className="text-center text-xs mt-2" style={{color:'#86868b'}}>Strength · v2.3 · Designed in Cupertino style</p>
+      <p className="text-center text-xs mt-2" style={{color:'#86868b'}}>Strength · v2.4 · Designed in Cupertino style</p>
     </>
+  );
+}
+
+// iOS-style segmented control: pill background with the active option
+// rendered as a white-card slider sitting above the others.
+function SegmentedControl({ value, onChange, options }) {
+  return (
+    <div className="inline-flex p-0.5 rounded-full" style={{background:'#F5F5F7'}}>
+      {options.map(opt => {
+        const active = opt.value === value;
+        return (
+          <button
+            key={opt.value}
+            onClick={() => onChange(opt.value)}
+            className="haptic px-3 py-1 rounded-full text-xs font-semibold transition-all"
+            style={{
+              background: active ? 'white' : 'transparent',
+              color: active ? '#1d1d1f' : '#86868b',
+              boxShadow: active ? '0 1px 3px rgba(0,0,0,0.08)' : 'none',
+            }}
+          >
+            {opt.label}
+          </button>
+        );
+      })}
+    </div>
   );
 }
 
