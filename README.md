@@ -9,13 +9,13 @@ A personal strength tracker, built as a Progressive Web App. Inspired by Tonal a
 ## Features
 
 - **Strength score (0–100)** computed from your top sets across seven muscle groups, using the average of the Epley (1985) and Brzycki (1993) one-rep-max formulas — validated within 2–4% of true 1RM in the 3–8 rep range
-- **Body heat map** with an interactive front-and-rear human diagram, color-coded red→orange→yellow→green by tier (Untrained / Novice / Intermediate / Advanced / Elite)
 - **Best & Worst Lifts widgets** ranking your individual exercises by per-lift strength score, normalized to bodyweight against published standards (ExRx, Symmetric Strength, Stronger By Science)
 - **Machine-vs-free-weight correction factors** so a 345 lb seated leg press isn't compared to a 345 lb back squat — leg press ×0.45, bicep machine ×0.55, fly machine ×0.65, lat pulldown ×0.85
-- **Workout generator** that builds a balanced session in an upper / lower / upper / lower / upper / upper sequence, with mutual-exclusion groups (e.g. won't pair Goblet Squat with Heel Elevated Goblet Squat in the same session)
+- **Workout generator** (the landing tab) that builds a balanced session in an upper / lower / upper / lower / upper / upper sequence, with mutual-exclusion groups (e.g. won't pair Front Squat with Split Squat, or Hack Squat with Linear Hack Press, in the same session)
 - **Stick-figure exercise diagrams** for every movement in the library, with a brief "How To" cue
 - **Adjustable per-exercise weights** with an Update button that activates only when the value changes; saves persist via IndexedDB
-- **Symmetry radar** and per-body-part bar charts on the Insights tab
+- **History tab** logging every weight change per exercise with its date, upper body first and alphabetical within each group, expandable to a full timeline showing the delta at each step
+- **Insights tab** collecting the strength score, Best/Worst Lifts, symmetry radar, and per-body-part bar chart in one place
 - **Installable as a PWA** with offline support, custom icon, fullscreen launch, and Apple/Android home-screen integration
 
 ## Tech stack
@@ -23,6 +23,7 @@ A personal strength tracker, built as a Progressive Web App. Inspired by Tonal a
 - React 18 + Vite
 - Tailwind CSS for styling
 - Recharts for charts
+- localForage (IndexedDB) for weight overrides, the history log, and profile data
 - Lucide React for icons
 - localForage (IndexedDB wrapper) for persistence
 - vite-plugin-pwa for service-worker generation, manifest, and offline caching
@@ -94,7 +95,7 @@ Open the URL in Chrome → tap the three-dot menu → **Install app** (or "Add t
 
 ## Customizing for your own data
 
-The workout library is hardcoded in `src/App.jsx`. Find the `RAW` constant near the top — it's a multi-line string of exercises in this format:
+The workout library is hardcoded in `src/App.jsx` as two constants near the top, `RAW_LOWER` and `RAW_UPPER` — multi-line strings, one exercise per line, no duplicates. Format:
 
 ```
 Exercise Name (sets x reps[-repHigh]) - weight
@@ -102,14 +103,16 @@ Exercise Name (sets x reps[-repHigh]) - weight
 
 Examples:
 ```
-T bar row (3 x 8-10) - 115
-Goblet Squat (3 x 8-10) - 75
-Side raises (3 x 8-10) - 15s        # trailing "s" = per side (e.g. dumbbells)
-Seated leg press 345                 # bare format → assumes 3 x 10
-2/3 squat (3 x 5-6) - body weight    # bodyweight movements
+T bar row (3 x 8-10) - 135
+Front Squat (3 x 8-10) - 125
+Side raises (3 x 8-10) - 20s                    # trailing "s" = per side (e.g. dumbbells)
+Seated leg press 375                            # bare format → assumes 3 x 10
+Single hamstring roll outs (3 x 6-8) - body weight   # bodyweight movements
 ```
 
-Sequences (sessions) are separated by blank lines, but the app treats them as a single pool — order doesn't imply chronology.
+Adding an exercise takes three edits: the line itself, a `MUSCLE_MAP` key so it classifies as the right muscle and body half, and a `DIAGRAM_PATTERNS` entry so it gets a stick figure. Miss the second and it falls through to `other`/`upper`, which puts it on the wrong side of the generator's sequence and drops it from scoring.
+
+`BASELINE_DATE` is the date the starting weights were recorded — the History tab uses it to label each lift's first entry. Update it when you replace the baselines.
 
 To rebuild after editing: `npm run build` and redeploy.
 
