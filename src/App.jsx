@@ -1,6 +1,6 @@
 import React, { useState, useMemo, useEffect, useRef } from 'react';
 import { XAxis, YAxis, Tooltip, ResponsiveContainer, RadarChart, PolarGrid, PolarAngleAxis, PolarRadiusAxis, Radar, BarChart, Bar, Cell } from 'recharts';
-import { Activity, Zap, Flame, BarChart3, Settings, Sparkles, Minus, Plus, RotateCcw, Eye, X, Camera, Trash2 } from 'lucide-react';
+import { Zap, Flame, BarChart3, Settings, Sparkles, Minus, Plus, RotateCcw, Eye, X, Camera, Trash2, History as HistoryIcon, ChevronDown, AlertTriangle, TrendingUp, TrendingDown } from 'lucide-react';
 import localforage from 'localforage';
 
 // ============================================================
@@ -16,6 +16,7 @@ localforage.config({
 });
 const STORAGE_KEYS = {
   overrides: 'weight-overrides',
+  history: 'weight-history',
   bodyweight: 'bodyweight',
   sex: 'sex',
   birthdate: 'birthdate',
@@ -94,81 +95,64 @@ const parseWeight = (weightStr) => {
   return { weight, isBodyweight, perSide };
 };
 
-// Lift library
-const RAW = `T bar row (3 x 8-10) - 115
-Goblet Squat (3 x 8-10) - 75
-Goodmorning (3 x 8-10) - 80
+// ============================================================
+// LIFT LIBRARY
+// ============================================================
+// One entry per movement — no duplicates. Baselines are the working
+// weights recorded 2026-08-21. Trailing "s" means per-side (e.g. "70s"
+// = 70 lb dumbbells in each hand).
+//
+// Consolidated from the older session logs:
+//   - RDL + DB RDL          → DB RDL (dumbbells are what actually gets used)
+//   - Goblet Squat + Heel elevated Goblet Squat → Front Squat
+//   - Single Arm row        → merged into Single arm DB row
+//   - Chest Machine barbell → merged into Chest press barbell
+//   - 2/3 squat             → dropped (was already excluded from rotation)
+// ============================================================
+const BASELINE_DATE = '2026-08-21';
+
+const RAW_LOWER = `Seated leg press 375
+Linear hack press 180s
+Hack Squat [hack slide] (3 x 8-10) - 140s
+Front Squat (3 x 8-10) - 125
+Split Squat (3 x 8) - 70s
+Leg curl (3 x 10-12) - 170
+Single hamstring roll outs (3 x 6-8) - body weight
+DB RDL (3 x 8-12) - 70s
+Goodmorning (3 x 8-10) - 80`;
+
+const RAW_UPPER = `T bar row (3 x 8-10) - 135
+Cable row (3 x 8-12) - 140
+Single arm DB row (3 x 8-10) - 65
+Standing Lat Pulldown (3 x 8-10) - 150
+Chest press barbell (3 x 8-10) - 160
+Incline press barbell 140
+Pectoral fly machine 150
+DB fly (3 x 8-10) - 55s
+Machine dips (3 x 8-12) - 165
+Side raises (3 x 8-10) - 20s
+Leaning side raise (3 x 8) - 20
+Full ROM Side raises (3 x 8-12) - 20s
 Tricep press down (3 x 8-10) - 70
-Skull Crusher (3 x 8-10) - 65
+Skull Crusher (3 x 8-10) - 30s
+Db hammer curls (3 x 8-12) - 35s
+Bicep curl machine 130`;
 
-DB fly (3 x 8-10) - 40
-Split squat (3 x 8) - 50s
-Hamstring roll outs (3 x 6-8) 
-2/3 squat (3 x 5-6) - body weight 
-Side raises (3 x 8-10) - 15s
-
-Single arm DB row (3 x 8-10) - 55
-2/3 Squat (3 x 6-8) - body weight 
-Leg curl (3 x 10-12) - 145 
-
-Hack Squat [hack slide] (3 x 8-10) - 105s
-Chest press barbell (3 x 8-10) - 155
-T bar row (3 x 8-10) - 115
-Leg curl (3 x 10-12)- 145
-Leaning side raise (3 x 8) - 15
-
-Goblet Squat (3 x 8-10) - 75 
-Goodmorning (3 x 8-10) - 80
-Side raises (3 x 8-10) - 15s
-Tricep press down (3 x 8-10) - 70
-
-Split Squat (3 x 8) - 50
-Cable row (3 x 8-12) - 115
-DB RDL (3 x 8-12) - 40s
-Chest Machine barbell (3 x 8-12) - 155
-Full ROM Side raises (3 x 8-12) - 10s
-Db hammer curls (3 x 8-12) - 20s 
-
-Standing Lat Pulldown (3 x 8-10) - 120
-Goodmorning (3 x 8-10) - 75
-
-cable row (3 x 8-12) - 115
-Goodmorning (3 x 8-12)- 75
-Machine dips (3 x 8-12) - 135
-
-Heel elevated Goblet Squat (3 x 8-12) - 65
-Single Arm row (3 x 10-12) - 55
-Chest Press barbell (3 x 8-12) - 155
-RDL (3 x 8-10) - 80
-Side raises (3 x 8-10) - 15
-
-Seated leg press 345
-Bicep curl machine 100
-Pectoral fly machine 135
-linear hack press 45s
-incline press barbell 120`;
+const RAW = RAW_LOWER + '\n' + RAW_UPPER;
 
 // Normalize names so "T bar row" and "t bar row" merge
 const nameKey = (n) => n.toLowerCase().replace(/\[.*?\]/g, '').replace(/\s+/g, ' ').trim();
 
-// Build a deduped exercise pool (heaviest variant of each unique movement)
+// The library is already deduplicated, so the pool is a straight parse.
+// A defensive dedupe stays in place in case a duplicate line is ever added.
 const EXERCISE_POOL = (() => {
   const map = {};
   RAW.split('\n').map(parseSet).filter(Boolean).forEach(ex => {
     const key = nameKey(ex.name);
-    const cur = map[key];
-    const score = ex.isBodyweight ? 0 : (ex.perSide ? ex.weight * 2 : ex.weight);
-    const curScore = cur ? (cur.isBodyweight ? 0 : (cur.perSide ? cur.weight * 2 : cur.weight)) : -1;
-    if (!cur || score > curScore) map[key] = ex;
+    if (!map[key]) map[key] = ex;
   });
   return Object.values(map);
 })();
-
-// All sequences, used for stats
-const SEQUENCES = RAW.split('\n\n').map((block, idx) => ({
-  id: idx,
-  exercises: block.split('\n').map(parseSet).filter(Boolean),
-}));
 
 // Exercise → muscle classification
 const MUSCLE_MAP = {
@@ -184,10 +168,9 @@ const MUSCLE_MAP = {
   'lat pulldown': { primary: 'back', body: 'upper' },
   'pulldown': { primary: 'back', body: 'upper' },
   'split squat': { primary: 'quads', body: 'lower' },
-  'goblet squat': { primary: 'quads', body: 'lower' },
+  'front squat': { primary: 'quads', body: 'lower' },
   'hack': { primary: 'quads', body: 'lower' },
   'leg press': { primary: 'quads', body: 'lower' },
-  '2/3 squat': { primary: 'quads', body: 'lower' },
   'goodmorning': { primary: 'hamstrings', body: 'lower' },
   'rdl': { primary: 'hamstrings', body: 'lower' },
   'leg curl': { primary: 'hamstrings', body: 'lower' },
@@ -273,7 +256,7 @@ const machineFactor = (name) => {
 // MAIN APP
 // ============================================================
 export default function App() {
-  const [tab, setTab] = useState('home');
+  const [tab, setTab] = useState('generate');
   const [bodyweight, setBodyweight] = useState(190);
   const [sex, setSex] = useState('male');               // 'male' | 'female'
   const [birthdate, setBirthdate] = useState(DEFAULT_BIRTHDATE);
@@ -283,6 +266,11 @@ export default function App() {
   // raw value here. bestLifts / muscleScores read overrides first, then
   // fall back to the original lift.txt values.
   const [weightOverrides, setWeightOverrides] = useState({});
+  // Append-only log of every weight change, keyed by nameKey:
+  //   { 't bar row': [{ weight: 140, date: '2026-08-24' }, ...] }
+  // The library baseline is NOT stored here — it's prepended at render time
+  // by the History tab, so resetting weights returns history to baseline too.
+  const [weightHistory, setWeightHistory] = useState({});
   // The current generated workout, lifted to App level so it persists
   // across tab navigation. null = no workout generated yet (show empty state).
   const [workout, setWorkout] = useState(null);
@@ -300,9 +288,11 @@ export default function App() {
       localforage.getItem(STORAGE_KEYS.sex),
       localforage.getItem(STORAGE_KEYS.birthdate),
       localforage.getItem(STORAGE_KEYS.avatar),
-    ]).then(([savedOverrides, savedBW, savedSex, savedBD, savedAvatar]) => {
+      localforage.getItem(STORAGE_KEYS.history),
+    ]).then(([savedOverrides, savedBW, savedSex, savedBD, savedAvatar, savedHistory]) => {
       if (cancelled) return;
       if (savedOverrides && typeof savedOverrides === 'object') setWeightOverrides(savedOverrides);
+      if (savedHistory && typeof savedHistory === 'object') setWeightHistory(savedHistory);
       if (typeof savedBW === 'number' && savedBW > 0) setBodyweight(savedBW);
       if (savedSex === 'male' || savedSex === 'female') setSex(savedSex);
       if (typeof savedBD === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(savedBD)) setBirthdate(savedBD);
@@ -336,41 +326,61 @@ export default function App() {
     else localforage.setItem(STORAGE_KEYS.avatar, avatar).catch(() => {});
   }, [avatar, hydrated]);
 
+  // Persist the history log on change (after hydration completes)
+  useEffect(() => {
+    if (!hydrated) return;
+    localforage.setItem(STORAGE_KEYS.history, weightHistory).catch(() => {});
+  }, [weightHistory, hydrated]);
+
+  // Saving a weight does two things: sets the override used for scoring and
+  // generation, and appends a dated entry to that lift's history. Two updates
+  // on the same calendar day collapse into one — the later value wins, so the
+  // log reads as "what I lifted that day" rather than every button press.
   const updateWeight = (name, newWeight) => {
-    setWeightOverrides(prev => ({ ...prev, [nameKey(name)]: newWeight }));
+    const key = nameKey(name);
+    const today = new Date().toLocaleDateString('en-CA'); // YYYY-MM-DD, local time
+    setWeightOverrides(prev => ({ ...prev, [key]: newWeight }));
+    setWeightHistory(prev => {
+      const entries = prev[key] ? [...prev[key]] : [];
+      const last = entries[entries.length - 1];
+      if (last && last.date === today) entries[entries.length - 1] = { weight: newWeight, date: today };
+      else entries.push({ weight: newWeight, date: today });
+      return { ...prev, [key]: entries };
+    });
+  };
+
+  // Clearing weights clears the log too, so the two never disagree.
+  const resetAllWeights = () => {
+    setWeightOverrides({});
+    setWeightHistory({});
   };
 
   const bestLifts = useMemo(() => {
     const map = {};
-    SEQUENCES.forEach(s => {
-      s.exercises.forEach(ex => {
-        if (ex.isBodyweight) return;
-        const key = nameKey(ex.name);
-        // If user has overridden this exercise's weight, use the override.
-        const effectiveWeight = weightOverrides[key] !== undefined ? weightOverrides[key] : ex.weight;
-        if (effectiveWeight === 0) return;
-        // Only add sled weight (45 lb) for barbell leg press/hack machines.
-        // Dumbbell "per side" exercises (e.g. "20s" = 20 lb each hand) should
-        // just be doubled, not have a 45 lb bar added.
-        const isSleddedMachine = /leg press|hack press|hack squat|hack slide/i.test(ex.name);
-        const rawWeight = ex.perSide
-          ? (isSleddedMachine ? effectiveWeight * 2 + 45 : effectiveWeight * 2)
-          : effectiveWeight;
-        const factor = machineFactor(ex.name);
-        const correctedWeight = rawWeight * factor;
-        const est = e1RM(correctedWeight, ex.reps);
-        if (!map[key] || est > map[key].e1rm) {
-          map[key] = {
-            name: ex.name,
-            e1rm: est,
-            rawWeight,
-            factor,
-            weight: correctedWeight,
-            reps: ex.reps,
-            muscle: classifyExercise(ex.name)
-          };
-        }
-      });
+    EXERCISE_POOL.forEach(ex => {
+      if (ex.isBodyweight) return;
+      const key = nameKey(ex.name);
+      // If user has overridden this exercise's weight, use the override.
+      const effectiveWeight = weightOverrides[key] !== undefined ? weightOverrides[key] : ex.weight;
+      if (effectiveWeight === 0) return;
+      // Only add sled weight (45 lb) for barbell leg press/hack machines.
+      // Dumbbell "per side" exercises (e.g. "20s" = 20 lb each hand) should
+      // just be doubled, not have a 45 lb bar added.
+      const isSleddedMachine = /leg press|hack press|hack squat|hack slide/i.test(ex.name);
+      const rawWeight = ex.perSide
+        ? (isSleddedMachine ? effectiveWeight * 2 + 45 : effectiveWeight * 2)
+        : effectiveWeight;
+      const factor = machineFactor(ex.name);
+      const correctedWeight = rawWeight * factor;
+      map[key] = {
+        name: ex.name,
+        e1rm: e1RM(correctedWeight, ex.reps),
+        rawWeight,
+        factor,
+        weight: correctedWeight,
+        reps: ex.reps,
+        muscle: classifyExercise(ex.name)
+      };
     });
     // Compute per-lift strength score (0-100) using the lift's primary muscle's
     // tier thresholds. This gives every individual lift a scored value so we
@@ -436,7 +446,7 @@ export default function App() {
                 {new Date().toLocaleDateString('en-US', { weekday: 'long', month: 'long', day: 'numeric' })}
               </p>
               <h1 className="text-3xl font-bold tracking-tight" style={{color:'#1d1d1f', letterSpacing:'-0.02em'}}>
-                {tab === 'home' ? 'Strength' : tab === 'generate' ? 'Generate' : tab === 'charts' ? 'Insights' : 'Profile'}
+                {tab === 'generate' ? 'Generate' : tab === 'history' ? 'History' : tab === 'insights' ? 'Insights' : 'Profile'}
               </h1>
             </div>
             <button onClick={() => setTab('profile')} className="haptic w-9 h-9 rounded-full flex items-center justify-center overflow-hidden flex-shrink-0" style={{background: avatar ? 'transparent' : 'linear-gradient(135deg,#FF375F,#FF9500)'}}>
@@ -449,15 +459,15 @@ export default function App() {
         </header>
 
         <main className="px-5 pt-3 space-y-4">
-          {tab === 'home' && <HomeView overall={overallScore} muscleScores={muscleScores} bestLifts={bestLifts} bodyweight={bodyweight} />}
           {tab === 'generate' && <GenerateView updateWeight={updateWeight} weightOverrides={weightOverrides} workout={workout} setWorkout={setWorkout} />}
-          {tab === 'charts' && <ChartsView muscleScores={muscleScores} />}
+          {tab === 'history' && <HistoryView weightHistory={weightHistory} weightOverrides={weightOverrides} />}
+          {tab === 'insights' && <InsightsView overall={overallScore} muscleScores={muscleScores} bestLifts={bestLifts} bodyweight={bodyweight} />}
           {tab === 'profile' && <ProfileView
             bodyweight={bodyweight} setBodyweight={setBodyweight}
             sex={sex} setSex={setSex}
             birthdate={birthdate} setBirthdate={setBirthdate}
             avatar={avatar} setAvatar={setAvatar}
-            weightOverrides={weightOverrides} setWeightOverrides={setWeightOverrides}
+            weightOverrides={weightOverrides} resetAllWeights={resetAllWeights}
             hydrated={hydrated}
           />}
         </main>
@@ -465,9 +475,9 @@ export default function App() {
         <nav className="fixed bottom-0 left-0 right-0 glass border-t border-black/5">
           <div className="max-w-md mx-auto flex justify-around py-2 pb-6">
             {[
-              { id:'home', icon: Activity, label:'Today' },
               { id:'generate', icon: Sparkles, label:'Generate' },
-              { id:'charts', icon: BarChart3, label:'Insights' },
+              { id:'history', icon: HistoryIcon, label:'History' },
+              { id:'insights', icon: BarChart3, label:'Insights' },
               { id:'profile', icon: Settings, label:'Profile' },
             ].map(t => {
               const Icon = t.icon;
@@ -487,16 +497,21 @@ export default function App() {
 }
 
 // ============================================================
-// HOME VIEW
+// INSIGHTS VIEW — strength score, best/worst lifts, symmetry
 // ============================================================
-function HomeView({ overall, muscleScores, bestLifts, bodyweight }) {
+function InsightsView({ overall, muscleScores, bestLifts, bodyweight }) {
   const tier = overall >= 75 ? 'Advanced' : overall >= 50 ? 'Intermediate' : overall >= 25 ? 'Novice' : 'Building';
   const scoredLifts = bestLifts.filter(l => l.liftScore !== null);
   const topLifts = [...scoredLifts].sort((a,b) => b.liftScore - a.liftScore).slice(0, 3);
   const bottomLifts = [...scoredLifts].sort((a,b) => a.liftScore - b.liftScore).slice(0, 3);
 
+  const radarData = Object.entries(muscleScores)
+    .filter(([,s]) => s.score > 0)
+    .map(([m, s]) => ({ muscle: m.charAt(0).toUpperCase()+m.slice(1), score: Math.round(s.score), full: 100 }));
+
   return (
     <>
+      {/* STRENGTH SCORE */}
       <div className="card p-6" style={{animationDelay:'0ms'}}>
         <div className="flex items-center gap-5">
           <StrengthRing score={overall} />
@@ -514,13 +529,14 @@ function HomeView({ overall, muscleScores, bestLifts, bodyweight }) {
         </p>
       </div>
 
+      {/* BEST / WORST LIFTS */}
       <LiftRankCard
         title="Best Lifts"
         subtitle="Your strongest movements relative to bodyweight"
         lifts={topLifts}
         accent="#34C759"
         gradient="linear-gradient(135deg,#34C759,#30D158)"
-        delay={120}
+        delay={80}
         bodyweight={bodyweight}
       />
 
@@ -530,14 +546,49 @@ function HomeView({ overall, muscleScores, bestLifts, bodyweight }) {
         lifts={bottomLifts}
         accent="#FF3B30"
         gradient="linear-gradient(135deg,#FF3B30,#FF453A)"
-        delay={180}
+        delay={140}
         bodyweight={bodyweight}
       />
 
-      <div className="card p-5" style={{animationDelay:'240ms'}}>
-        <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{color:'#86868b'}}>Your Exercise Library</p>
-        <p className="text-2xl font-bold" style={{color:'#1d1d1f'}}>{EXERCISE_POOL.length}<span className="text-sm font-normal ml-1" style={{color:'#86868b'}}>exercises tracked</span></p>
-        <p className="text-sm mt-2" style={{color:'#424245'}}>Tap <span className="font-semibold" style={{color:'#FF375F'}}>Generate</span> to build today's session — upper, lower, upper, lower, upper, upper.</p>
+      {/* SYMMETRY PROFILE */}
+      <div className="card p-5" style={{animationDelay:'200ms'}}>
+        <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{color:'#86868b'}}>Symmetry Profile</p>
+        <ResponsiveContainer width="100%" height={260}>
+          <RadarChart data={radarData}>
+            <PolarGrid stroke="#E5E5EA" />
+            <PolarAngleAxis dataKey="muscle" tick={{fontSize:11, fill:'#1d1d1f', fontWeight:600}} />
+            <PolarRadiusAxis tick={{fontSize:9, fill:'#86868b'}} angle={90} domain={[0,100]} />
+            <Radar name="Score" dataKey="score" stroke="#FF375F" fill="#FF375F" fillOpacity={0.3} strokeWidth={2} />
+          </RadarChart>
+        </ResponsiveContainer>
+        <p className="text-xs leading-relaxed mt-2" style={{color:'#86868b'}}>
+          Larger and more circular = stronger and more balanced. Asymmetric points reveal undertrained body parts.
+        </p>
+      </div>
+
+      {/* SCORE BY BODY PART */}
+      <div className="card p-5" style={{animationDelay:'260ms'}}>
+        <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{color:'#86868b'}}>Score by Body Part</p>
+        <ResponsiveContainer width="100%" height={220}>
+          <BarChart data={radarData} layout="vertical" margin={{left:10}}>
+            <XAxis type="number" domain={[0,100]} tick={{fontSize:10, fill:'#86868b'}} axisLine={false} tickLine={false} />
+            <YAxis type="category" dataKey="muscle" tick={{fontSize:11, fill:'#1d1d1f', fontWeight:500}} axisLine={false} tickLine={false} width={80} />
+            <Tooltip contentStyle={{borderRadius:12, border:'none', boxShadow:'0 4px 16px rgba(0,0,0,0.1)', fontSize:12}} />
+            <Bar dataKey="score" radius={[0,8,8,0]}>
+              {radarData.map((d, i) => (
+                <Cell key={i} fill={d.score < 25 ? '#FF3B30' : d.score < 50 ? '#FF9500' : d.score < 75 ? '#FFCC00' : '#34C759'} />
+              ))}
+            </Bar>
+          </BarChart>
+        </ResponsiveContainer>
+      </div>
+
+      <div className="card p-5" style={{animationDelay:'320ms'}}>
+        <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{color:'#86868b'}}>Exercise Library</p>
+        <p className="text-2xl font-bold" style={{color:'#1d1d1f'}}>{EXERCISE_POOL.length}<span className="text-sm font-normal ml-1" style={{color:'#86868b'}}>movements tracked</span></p>
+        <p className="text-sm mt-2" style={{color:'#424245'}}>
+          {EXERCISE_POOL.filter(e => classifyExercise(e.name).body === 'upper').length} upper · {EXERCISE_POOL.filter(e => classifyExercise(e.name).body === 'lower').length} lower
+        </p>
       </div>
     </>
   );
@@ -600,10 +651,10 @@ function LiftRankCard({ title, subtitle, lifts, accent, gradient, delay, bodywei
 // ============================================================
 
 // Exercises removed from rotation entirely
-const BANNED_EXERCISES = new Set([
-  'chest machine barbell',
-  '2/3 squat',
-]);
+// The library is now deduplicated at the source, so nothing needs banning.
+// Kept as an escape hatch for pulling a lift out of rotation (injury, gym
+// doesn't have the machine) without deleting its history.
+const BANNED_EXERCISES = new Set([]);
 
 // Mutual-exclusion groups: if any member is already picked, all others
 // in the same group are blocked for the rest of that session.
@@ -613,8 +664,10 @@ const EXCLUSION_GROUPS = [
   ['chest press barbell', 'incline press barbell'],
   ['side raises', 'leaning side raise', 'full rom side raises'],
   ['db hammer curls', 'bicep curl machine'],
-  ['goblet squat', 'heel elevated goblet squat', 'split squat'],
-  ['hack squat', 'linear hack press'],
+  ['tricep press down', 'skull crusher'],
+  ['front squat', 'split squat'],
+  ['hack squat', 'linear hack press', 'seated leg press'],
+  ['db rdl', 'goodmorning'],
 ].map(group => group.map(n => n.toLowerCase()));
 
 // Returns the set of nameKeys blocked by the exercises already picked
@@ -888,7 +941,7 @@ function ExerciseDiagramModal({ ex, bodyColor, onClose }) {
 // Pattern matchers map exercise names to a diagram + how-to.
 // Order matters — first match wins, so put more specific patterns first.
 const DIAGRAM_PATTERNS = [
-  { test: n => /goblet squat/i.test(n), key: 'goblet' },
+  { test: n => /front squat/i.test(n), key: 'frontsquat' },
   { test: n => /split squat/i.test(n), key: 'split' },
   { test: n => /hack squat|hack press|leg press/i.test(n), key: 'legpress' },
   { test: n => /goodmorning/i.test(n), key: 'goodmorning' },
@@ -948,7 +1001,7 @@ const Floor = () => <line x1="20" y1="180" x2="180" y2="180" stroke="#C7C7CC" st
 const Bench = ({ y=140 }) => <rect x="50" y={y} width="100" height="8" fill="#C7C7CC" rx="2" />;
 
 const DIAGRAMS = {
-  goblet: {
+  frontsquat: {
     svg: (c) => (
       <StickPerson>
         <Floor />
@@ -959,14 +1012,16 @@ const DIAGRAMS = {
         <Line x1={75} y1={140} x2={75} y2={180} /> {/* lower leg L */}
         <Line x1={100} y1={110} x2={125} y2={140} />
         <Line x1={125} y1={140} x2={125} y2={180} />
-        {/* arms holding dumbbell at chest */}
-        <Line x1={100} y1={75} x2={90} y2={95} />
-        <Line x1={100} y1={75} x2={110} y2={95} />
-        <Dumbbell cx={100} cy={95} color={c} />
+        {/* elbows driven high, bar racked across the front delts */}
+        <Line x1={100} y1={72} x2={82} y2={78} />
+        <Line x1={82} y1={78} x2={88} y2={64} />
+        <Line x1={100} y1={72} x2={118} y2={78} />
+        <Line x1={118} y1={78} x2={112} y2={64} />
+        <Barbell x1={70} y1={70} x2={130} y2={70} color={c} />
         <Arrow x={155} y={70} dy={70} color={c} />
       </StickPerson>
     ),
-    howTo: 'Hold a dumbbell vertically at your chest. Squat down keeping your chest up and elbows tucked between your knees. Drive through your heels to stand.'
+    howTo: 'Rack the bar across your front delts and collarbone, elbows driven high and forward. Squat down with your torso upright, keeping the elbows up so the bar stays put. Drive through your midfoot to stand.'
   },
   split: {
     svg: (c) => (
@@ -1313,53 +1368,157 @@ function Stepper({ label, value, unit, onMinus, onPlus, color }) {
 }
 
 // ============================================================
-// CHARTS VIEW
+// HISTORY VIEW — per-exercise weight log
 // ============================================================
-function ChartsView({ muscleScores }) {
-  const radarData = Object.entries(muscleScores)
-    .filter(([,s]) => s.score > 0)
-    .map(([m, s]) => ({ muscle: m.charAt(0).toUpperCase()+m.slice(1), score: Math.round(s.score), full: 100 }));
+// Upper body listed first, alphabetical within each group. Every lift
+// starts with its library baseline; each saved update on the Generate
+// tab appends a dated entry on top of it.
+
+const fmtWeight = (w, ex) => {
+  if (ex.isBodyweight) return 'BW';
+  return ex.perSide ? `${w} lb/side` : `${w} lb`;
+};
+
+const fmtDate = (iso) => {
+  const d = new Date(iso + 'T00:00:00');
+  if (isNaN(d.getTime())) return iso;
+  return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' });
+};
+
+// Builds [{ weight, date, isBaseline, delta }] oldest → newest for one lift
+const buildTimeline = (ex, entries) => {
+  const timeline = [{ weight: ex.weight, date: BASELINE_DATE, isBaseline: true, delta: 0 }];
+  (entries || []).forEach(e => {
+    const prev = timeline[timeline.length - 1];
+    timeline.push({ weight: e.weight, date: e.date, isBaseline: false, delta: +(e.weight - prev.weight).toFixed(2) });
+  });
+  return timeline;
+};
+
+function HistoryView({ weightHistory, weightOverrides }) {
+  const groups = useMemo(() => {
+    const build = (body) => EXERCISE_POOL
+      .filter(ex => classifyExercise(ex.name).body === body)
+      .sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }))
+      .map(ex => {
+        const key = nameKey(ex.name);
+        const timeline = buildTimeline(ex, weightHistory[key]);
+        const current = weightOverrides[key] !== undefined ? weightOverrides[key] : ex.weight;
+        return { ex, key, timeline, current, updates: timeline.length - 1 };
+      });
+    return { upper: build('upper'), lower: build('lower') };
+  }, [weightHistory, weightOverrides]);
+
+  const totalUpdates = [...groups.upper, ...groups.lower].reduce((n, g) => n + g.updates, 0);
 
   return (
     <>
       <div className="card p-5" style={{animationDelay:'0ms'}}>
-        <p className="text-xs font-semibold uppercase tracking-wider mb-2" style={{color:'#86868b'}}>Symmetry Profile</p>
-        <ResponsiveContainer width="100%" height={260}>
-          <RadarChart data={radarData}>
-            <PolarGrid stroke="#E5E5EA" />
-            <PolarAngleAxis dataKey="muscle" tick={{fontSize:11, fill:'#1d1d1f', fontWeight:600}} />
-            <PolarRadiusAxis tick={{fontSize:9, fill:'#86868b'}} angle={90} domain={[0,100]} />
-            <Radar name="Score" dataKey="score" stroke="#FF375F" fill="#FF375F" fillOpacity={0.3} strokeWidth={2} />
-          </RadarChart>
-        </ResponsiveContainer>
-        <p className="text-xs leading-relaxed mt-2" style={{color:'#86868b'}}>
-          Larger and more circular = stronger and more balanced. Asymmetric points reveal undertrained body parts.
+        <p className="text-xs font-semibold uppercase tracking-wider" style={{color:'#86868b'}}>Weight Log</p>
+        <p className="text-2xl font-bold mt-0.5" style={{color:'#1d1d1f', letterSpacing:'-0.02em'}}>
+          {totalUpdates}<span className="text-base font-normal ml-1.5" style={{color:'#86868b'}}>{totalUpdates === 1 ? 'update' : 'updates'} logged</span>
+        </p>
+        <p className="text-sm mt-2 leading-relaxed" style={{color:'#424245'}}>
+          {totalUpdates === 0
+            ? `Every lift is sitting at its baseline from ${fmtDate(BASELINE_DATE)}. Save a new weight on the Generate tab and it'll show up here.`
+            : 'Tap any lift to see how its weight has moved over time.'}
         </p>
       </div>
 
-      <div className="card p-5" style={{animationDelay:'80ms'}}>
-        <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{color:'#86868b'}}>Score by Body Part</p>
-        <ResponsiveContainer width="100%" height={220}>
-          <BarChart data={radarData} layout="vertical" margin={{left:10}}>
-            <XAxis type="number" domain={[0,100]} tick={{fontSize:10, fill:'#86868b'}} axisLine={false} tickLine={false} />
-            <YAxis type="category" dataKey="muscle" tick={{fontSize:11, fill:'#1d1d1f', fontWeight:500}} axisLine={false} tickLine={false} width={80} />
-            <Tooltip contentStyle={{borderRadius:12, border:'none', boxShadow:'0 4px 16px rgba(0,0,0,0.1)', fontSize:12}} />
-            <Bar dataKey="score" radius={[0,8,8,0]}>
-              {radarData.map((d, i) => (
-                <Cell key={i} fill={d.score < 25 ? '#FF3B30' : d.score < 50 ? '#FF9500' : d.score < 75 ? '#FFCC00' : '#34C759'} />
-              ))}
-            </Bar>
-          </BarChart>
-        </ResponsiveContainer>
-      </div>
+      <HistorySection title="Upper Body" accent="#FF375F" rows={groups.upper} startDelay={60} />
+      <HistorySection title="Lower Body" accent="#FF9500" rows={groups.lower} startDelay={120} />
     </>
+  );
+}
+
+function HistorySection({ title, accent, rows, startDelay }) {
+  if (!rows.length) return null;
+  return (
+    <div className="card overflow-hidden" style={{animationDelay:`${startDelay}ms`}}>
+      <div className="px-5 pt-4 pb-2 flex items-center gap-2.5">
+        <div className="w-1 h-4 rounded-full" style={{background: accent}} />
+        <p className="text-xs font-bold uppercase tracking-widest" style={{color: accent}}>{title}</p>
+        <span className="text-xs tabular-nums ml-auto" style={{color:'#86868b'}}>{rows.length}</span>
+      </div>
+      <div>
+        {rows.map(row => <HistoryRow key={row.key} row={row} accent={accent} />)}
+      </div>
+    </div>
+  );
+}
+
+function HistoryRow({ row, accent }) {
+  const [open, setOpen] = useState(false);
+  const { ex, timeline, current, updates } = row;
+  const netDelta = +(current - ex.weight).toFixed(2);
+
+  return (
+    <div className="border-t border-black/[0.04]">
+      <button
+        onClick={() => setOpen(o => !o)}
+        className="w-full px-5 py-3 flex items-center gap-3 text-left haptic"
+      >
+        <div className="flex-1 min-w-0">
+          <p className="text-sm font-semibold truncate" style={{color:'#1d1d1f'}}>{ex.name}</p>
+          <p className="text-xs mt-0.5" style={{color:'#86868b'}}>
+            {updates === 0 ? 'Baseline only' : `${updates} ${updates === 1 ? 'update' : 'updates'} · since ${fmtDate(BASELINE_DATE)}`}
+          </p>
+        </div>
+        <div className="text-right flex-shrink-0">
+          <p className="text-sm font-bold tabular-nums" style={{color:'#1d1d1f'}}>{fmtWeight(current, ex)}</p>
+          {netDelta !== 0 && (
+            <p className="text-xs font-semibold tabular-nums flex items-center justify-end gap-0.5" style={{color: netDelta > 0 ? '#34C759' : '#FF3B30'}}>
+              {netDelta > 0 ? <TrendingUp size={11} strokeWidth={2.5} /> : <TrendingDown size={11} strokeWidth={2.5} />}
+              {netDelta > 0 ? '+' : ''}{netDelta}
+            </p>
+          )}
+        </div>
+        <ChevronDown
+          size={16}
+          color="#C7C7CC"
+          strokeWidth={2.5}
+          className="flex-shrink-0"
+          style={{transform: open ? 'rotate(180deg)' : 'none', transition:'transform 0.2s ease'}}
+        />
+      </button>
+
+      {open && (
+        <div className="px-5 pb-4 pl-6" style={{animation:'fadeUp 0.25s ease both'}}>
+          {/* newest first so the most recent weight reads at the top */}
+          {[...timeline].reverse().map((entry, i) => (
+            <div key={i} className="flex items-start gap-3 relative pb-3 last:pb-0">
+              <div className="flex flex-col items-center flex-shrink-0" style={{width:'10px'}}>
+                <div className="w-2.5 h-2.5 rounded-full mt-1.5" style={{
+                  background: entry.isBaseline ? '#C7C7CC' : accent,
+                  boxShadow: entry.isBaseline ? 'none' : `0 0 0 3px ${accent}22`,
+                }} />
+                {i < timeline.length - 1 && <div className="flex-1 w-px mt-1" style={{background:'#E5E5EA', minHeight:'18px'}} />}
+              </div>
+              <div className="flex-1 min-w-0 flex items-baseline justify-between gap-2">
+                <div className="min-w-0">
+                  <p className="text-sm font-semibold tabular-nums" style={{color:'#1d1d1f'}}>{fmtWeight(entry.weight, ex)}</p>
+                  <p className="text-xs" style={{color:'#86868b'}}>
+                    {fmtDate(entry.date)}{entry.isBaseline ? ' · baseline' : ''}
+                  </p>
+                </div>
+                {!entry.isBaseline && entry.delta !== 0 && (
+                  <span className="text-xs font-semibold tabular-nums flex-shrink-0" style={{color: entry.delta > 0 ? '#34C759' : '#FF3B30'}}>
+                    {entry.delta > 0 ? '+' : ''}{entry.delta}
+                  </span>
+                )}
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
   );
 }
 
 // ============================================================
 // PROFILE VIEW
 // ============================================================
-function ProfileView({ bodyweight, setBodyweight, sex, setSex, birthdate, setBirthdate, avatar, setAvatar, weightOverrides, setWeightOverrides, hydrated }) {
+function ProfileView({ bodyweight, setBodyweight, sex, setSex, birthdate, setBirthdate, avatar, setAvatar, weightOverrides, resetAllWeights, hydrated }) {
   const [confirmReset, setConfirmReset] = useState(false);
   const [uploadError, setUploadError] = useState(null);
   const fileInputRef = useRef(null);
@@ -1367,7 +1526,7 @@ function ProfileView({ bodyweight, setBodyweight, sex, setSex, birthdate, setBir
   const age = ageFromBirthdate(birthdate);
 
   const reset = () => {
-    setWeightOverrides({});
+    resetAllWeights();
     setConfirmReset(false);
   };
 
@@ -1467,24 +1626,13 @@ function ProfileView({ bodyweight, setBodyweight, sex, setSex, birthdate, setBir
         <Row label="Saved Overrides">
           <span className="text-sm tabular-nums" style={{color:'#86868b'}}>{overrideCount} {overrideCount === 1 ? 'lift' : 'lifts'}</span>
         </Row>
-        {!confirmReset ? (
-          <button onClick={() => setConfirmReset(true)} disabled={overrideCount === 0}
-            className="haptic w-full mt-3 py-2.5 rounded-xl text-sm font-semibold transition-all"
-            style={{background: overrideCount > 0 ? '#F5F5F7' : '#FAFAFA', color: overrideCount > 0 ? '#FF3B30' : '#C7C7CC'}}>
-            Reset all weights
-          </button>
-        ) : (
-          <div className="mt-3 grid grid-cols-2 gap-2">
-            <button onClick={() => setConfirmReset(false)} className="haptic py-2.5 rounded-xl text-sm font-semibold" style={{background:'#F5F5F7', color:'#1d1d1f'}}>
-              Cancel
-            </button>
-            <button onClick={reset} className="haptic py-2.5 rounded-xl text-sm font-semibold text-white" style={{background:'#FF3B30', boxShadow:'0 2px 8px #FF3B3040'}}>
-              Confirm Reset
-            </button>
-          </div>
-        )}
+        <button onClick={() => setConfirmReset(true)} disabled={overrideCount === 0}
+          className="haptic w-full mt-3 py-2.5 rounded-xl text-sm font-semibold transition-all"
+          style={{background: overrideCount > 0 ? '#F5F5F7' : '#FAFAFA', color: overrideCount > 0 ? '#FF3B30' : '#C7C7CC'}}>
+          Reset all weights
+        </button>
         <p className="text-xs mt-3 leading-relaxed" style={{color:'#86868b'}}>
-          Weight updates, profile fields, and your photo are saved in your browser's IndexedDB and persist across sessions. Reset reverts all weights back to their original library values.
+          Weight updates, profile fields, and your photo are saved in your browser's IndexedDB and persist across sessions. Reset reverts all weights back to their original library values and clears the history log.
         </p>
       </div>
 
@@ -1505,8 +1653,56 @@ function ProfileView({ bodyweight, setBodyweight, sex, setSex, birthdate, setBir
         </p>
       </div>
 
-      <p className="text-center text-xs mt-2" style={{color:'#86868b'}}>Strength · v2.4 · Designed in Cupertino style</p>
+      <p className="text-center text-xs mt-2" style={{color:'#86868b'}}>Strength · v3.0 · Designed in Cupertino style</p>
+
+      {confirmReset && (
+        <ConfirmDialog
+          title="Reset all weights?"
+          body={`This clears ${overrideCount} saved ${overrideCount === 1 ? 'weight' : 'weights'} and the full history log, returning every lift to its ${fmtDate(BASELINE_DATE)} baseline. This can't be undone.`}
+          confirmLabel="Reset weights"
+          onConfirm={reset}
+          onCancel={() => setConfirmReset(false)}
+        />
+      )}
     </>
+  );
+}
+
+// Destructive-action confirmation. Backdrop tap and Cancel both dismiss;
+// only the red button commits, so a misplaced tap can't wipe the log.
+function ConfirmDialog({ title, body, confirmLabel, onConfirm, onCancel }) {
+  useEffect(() => {
+    const onKey = (e) => { if (e.key === 'Escape') onCancel(); };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, [onCancel]);
+
+  return (
+    <div
+      onClick={onCancel}
+      role="dialog"
+      aria-modal="true"
+      className="fixed inset-0 z-50 flex items-center justify-center p-6"
+      style={{background:'rgba(0,0,0,0.45)', backdropFilter:'blur(8px)', WebkitBackdropFilter:'blur(8px)', animation:'fadeUp 0.2s ease both'}}
+    >
+      <div onClick={e => e.stopPropagation()} className="card w-full max-w-xs overflow-hidden" style={{animation:'fadeUp 0.25s ease both'}}>
+        <div className="px-5 pt-6 pb-4 text-center">
+          <div className="mx-auto w-12 h-12 rounded-full flex items-center justify-center mb-3" style={{background:'#FFF0EF'}}>
+            <AlertTriangle size={24} color="#FF3B30" strokeWidth={2.2} />
+          </div>
+          <h3 className="text-base font-bold" style={{color:'#1d1d1f', letterSpacing:'-0.01em'}}>{title}</h3>
+          <p className="text-sm mt-1.5 leading-relaxed" style={{color:'#86868b'}}>{body}</p>
+        </div>
+        <div className="grid grid-cols-2 gap-2 px-4 pb-4">
+          <button onClick={onCancel} autoFocus className="haptic py-2.5 rounded-xl text-sm font-semibold" style={{background:'#F5F5F7', color:'#1d1d1f'}}>
+            Cancel
+          </button>
+          <button onClick={onConfirm} className="haptic py-2.5 rounded-xl text-sm font-semibold text-white" style={{background:'#FF3B30', boxShadow:'0 2px 8px #FF3B3040'}}>
+            {confirmLabel}
+          </button>
+        </div>
+      </div>
+    </div>
   );
 }
 
