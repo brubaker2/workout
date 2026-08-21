@@ -100,7 +100,7 @@ const parseWeight = (weightStr) => {
 // ============================================================
 // One entry per movement — no duplicates. Baselines are the working
 // weights recorded 2026-08-21. Trailing "s" means per-side (e.g. "70s"
-// = 70 lb dumbbells in each hand).
+// = 70 lb dumbbells in each hand), which doubles the load before scoring.
 //
 // Consolidated from the older session logs:
 //   - RDL + DB RDL          → DB RDL (dumbbells are what actually gets used)
@@ -460,7 +460,7 @@ export default function App() {
 
         <main className="px-5 pt-3 space-y-4">
           {tab === 'generate' && <GenerateView updateWeight={updateWeight} weightOverrides={weightOverrides} workout={workout} setWorkout={setWorkout} />}
-          {tab === 'history' && <HistoryView weightHistory={weightHistory} weightOverrides={weightOverrides} />}
+          {tab === 'history' && <HistoryView weightHistory={weightHistory} weightOverrides={weightOverrides} updateWeight={updateWeight} />}
           {tab === 'insights' && <InsightsView overall={overallScore} muscleScores={muscleScores} bestLifts={bestLifts} bodyweight={bodyweight} />}
           {tab === 'profile' && <ProfileView
             bodyweight={bodyweight} setBodyweight={setBodyweight}
@@ -823,10 +823,14 @@ function GenerateView({ updateWeight, weightOverrides, workout, setWorkout }) {
   );
 }
 
+// Weight increment matched to the load: plates get bigger as the bar does.
+// Shared by the Generate tab and the History tab so both steppers agree.
+const stepFor = (w) => (w >= 100 ? 5 : w >= 25 ? 2.5 : 1);
+
 function ExerciseCard({ ex, idx, onUpdate, onSave }) {
   const [showDiagram, setShowDiagram] = useState(false);
   const bodyColor = ex.body === 'upper' ? '#FF375F' : '#FF9500';
-  const stepWeight = ex.workingWeight >= 100 ? 5 : ex.workingWeight >= 25 ? 2.5 : 1;
+  const stepWeight = stepFor(ex.workingWeight);
   const adjust = (delta) => {
     const next = Math.max(0, +(ex.workingWeight + delta).toFixed(2));
     onUpdate(next);
@@ -1395,7 +1399,7 @@ const buildTimeline = (ex, entries) => {
   return timeline;
 };
 
-function HistoryView({ weightHistory, weightOverrides }) {
+function HistoryView({ weightHistory, weightOverrides, updateWeight }) {
   const groups = useMemo(() => {
     const build = (body) => EXERCISE_POOL
       .filter(ex => classifyExercise(ex.name).body === body)
@@ -1425,13 +1429,13 @@ function HistoryView({ weightHistory, weightOverrides }) {
         </p>
       </div>
 
-      <HistorySection title="Upper Body" accent="#FF375F" rows={groups.upper} startDelay={60} />
-      <HistorySection title="Lower Body" accent="#FF9500" rows={groups.lower} startDelay={120} />
+      <HistorySection title="Upper Body" accent="#FF375F" rows={groups.upper} startDelay={60} updateWeight={updateWeight} />
+      <HistorySection title="Lower Body" accent="#FF9500" rows={groups.lower} startDelay={120} updateWeight={updateWeight} />
     </>
   );
 }
 
-function HistorySection({ title, accent, rows, startDelay }) {
+function HistorySection({ title, accent, rows, startDelay, updateWeight }) {
   if (!rows.length) return null;
   return (
     <div className="card overflow-hidden" style={{animationDelay:`${startDelay}ms`}}>
@@ -1441,13 +1445,66 @@ function HistorySection({ title, accent, rows, startDelay }) {
         <span className="text-xs tabular-nums ml-auto" style={{color:'#86868b'}}>{rows.length}</span>
       </div>
       <div>
-        {rows.map(row => <HistoryRow key={row.key} row={row} accent={accent} />)}
+        {rows.map(row => <HistoryRow key={row.key} row={row} accent={accent} updateWeight={updateWeight} />)}
       </div>
     </div>
   );
 }
 
-function HistoryRow({ row, accent }) {
+// Inline weight editor shown when a history row is expanded. Writes through
+// the same updateWeight() the Generate tab uses, so a change made here lands
+// in the log with today's date exactly like one saved mid-workout.
+function HistoryWeightEditor({ ex, current, accent, updateWeight }) {
+  const [draft, setDraft] = useState(current);
+
+  // Follow the stored value if it changes elsewhere (a save on the Generate
+  // tab, or Reset all weights) so the stepper never shows a stale number.
+  useEffect(() => { setDraft(current); }, [current]);
+
+  if (ex.isBodyweight) {
+    return (
+      <div className="rounded-2xl p-3 text-center" style={{background:'#F5F5F7'}}>
+        <p className="text-[10px] font-semibold uppercase tracking-wide" style={{color:'#86868b'}}>Weight</p>
+        <p className="text-base font-bold mt-1" style={{color:'#1d1d1f'}}>BW</p>
+        <p className="text-xs mt-1" style={{color:'#86868b'}}>Bodyweight movement — nothing to log</p>
+      </div>
+    );
+  }
+
+  const step = stepFor(draft);
+  const adjust = (delta) => setDraft(Math.max(0, +(draft + delta).toFixed(2)));
+  const isDirty = draft !== current;
+
+  return (
+    <div className="flex items-stretch gap-2">
+      <div className="flex-1">
+        <Stepper
+          label="Weight"
+          value={draft}
+          unit={ex.perSide ? 'lb/side' : 'lb'}
+          onMinus={() => adjust(-step)}
+          onPlus={() => adjust(step)}
+          color={accent}
+        />
+      </div>
+      <button
+        onClick={() => updateWeight(ex.name, draft)}
+        disabled={!isDirty}
+        className="haptic px-4 rounded-2xl text-sm font-semibold flex-shrink-0 transition-all"
+        style={{
+          background: isDirty ? accent : '#F5F5F7',
+          color: isDirty ? 'white' : '#C7C7CC',
+          cursor: isDirty ? 'pointer' : 'default',
+          boxShadow: isDirty ? `0 2px 8px ${accent}40` : 'none',
+        }}
+      >
+        Save
+      </button>
+    </div>
+  );
+}
+
+function HistoryRow({ row, accent, updateWeight }) {
   const [open, setOpen] = useState(false);
   const { ex, timeline, current, updates } = row;
   const netDelta = +(current - ex.weight).toFixed(2);
@@ -1483,7 +1540,10 @@ function HistoryRow({ row, accent }) {
       </button>
 
       {open && (
-        <div className="px-5 pb-4 pl-6" style={{animation:'fadeUp 0.25s ease both'}}>
+        <div className="px-5 pb-4" style={{animation:'fadeUp 0.25s ease both'}}>
+          <HistoryWeightEditor ex={ex} current={current} accent={accent} updateWeight={updateWeight} />
+          <p className="text-[10px] font-bold uppercase tracking-widest mt-4 mb-2" style={{color:'#86868b'}}>Timeline</p>
+          <div className="pl-1">
           {/* newest first so the most recent weight reads at the top */}
           {[...timeline].reverse().map((entry, i) => (
             <div key={i} className="flex items-start gap-3 relative pb-3 last:pb-0">
@@ -1509,6 +1569,7 @@ function HistoryRow({ row, accent }) {
               </div>
             </div>
           ))}
+          </div>
         </div>
       )}
     </div>
