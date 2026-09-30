@@ -11,10 +11,10 @@ A personal strength tracker, built as a Progressive Web App. Inspired by Tonal a
 - **Strength score (0–100)** computed from your top sets across seven muscle groups, using the average of the Epley (1985) and Brzycki (1993) one-rep-max formulas — validated within 2–4% of true 1RM in the 3–8 rep range
 - **Best & Worst Lifts widgets** ranking your individual exercises by per-lift strength score, normalized to bodyweight against published standards (ExRx, Symmetric Strength, Stronger By Science)
 - **Machine-vs-free-weight correction factors** so a 345 lb seated leg press isn't compared to a 345 lb back squat — leg press ×0.45, bicep machine ×0.55, fly machine ×0.65, lat pulldown ×0.85
-- **Workout generator** (the landing tab) that builds a balanced session in an upper / lower / upper / lower / upper / upper sequence, with mutual-exclusion groups (e.g. won't pair Front Squat with Split Squat, or Hack Squat with Linear Hack Press, in the same session)
+- **Workout generator** (the landing tab) that builds a balanced session in an upper / lower / upper / lower / upper / lower / upper sequence, with mutual-exclusion groups (e.g. won't pair Front Squat with Split Squat, or Hack Squat with Linear Hack Press, in the same session)
 - **Stick-figure exercise diagrams** for every movement in the library, with a brief "How To" cue
 - **Adjustable per-exercise weights** with an Update button that activates only when the value changes; saves persist via IndexedDB
-- **History tab** logging every weight change per exercise with its date, upper body first and alphabetical within each group, expandable to a full timeline showing the delta at each step
+- **History tab** logging every weight change per exercise with its date, upper body first and alphabetical within each group, with matching colored ribbons marking redundant lifts (similar movements for the same muscles), expandable to a full timeline showing the delta at each step
 - **Insights tab** collecting the strength score, Best/Worst Lifts, symmetry radar, and per-body-part bar chart in one place
 - **Installable as a PWA** with offline support, custom icon, fullscreen launch, and Apple/Android home-screen integration
 

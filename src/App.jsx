@@ -647,7 +647,7 @@ function LiftRankCard({ title, subtitle, lifts, accent, gradient, delay, bodywei
 }
 
 // ============================================================
-// GENERATE VIEW — daily workout builder, sequence U/L/U/L/U/U
+// GENERATE VIEW — daily workout builder, sequence U/L/U/L/U/L/U
 // ============================================================
 
 // Exercises removed from rotation entirely
@@ -670,6 +670,10 @@ const EXCLUSION_GROUPS = [
   ['db rdl', 'goodmorning'],
 ].map(group => group.map(n => n.toLowerCase()));
 
+// Session order: alternating, with a third lower slotted between the last
+// two upper finishers. Shared by the generator and the sequence preview.
+const WORKOUT_SEQUENCE = ['upper', 'lower', 'upper', 'lower', 'upper', 'lower', 'upper'];
+
 // Returns the set of nameKeys blocked by the exercises already picked
 const blockedByExclusions = (usedKeys) => {
   const blocked = new Set();
@@ -686,11 +690,10 @@ function GenerateView({ updateWeight, weightOverrides, workout, setWorkout }) {
   // Filter banned exercises out of the pool once at generation time
   const filteredPool = EXERCISE_POOL.filter(ex => !BANNED_EXERCISES.has(nameKey(ex.name)));
 
-  // Sequence: 6 slots — U, L, U, L, U, U
+  // Sequence: 7 slots — U, L, U, L, U, L, U
   const generate = () => {
     setGenerating(true);
     setTimeout(() => {
-      const sequence = ['upper', 'lower', 'upper', 'lower', 'upper', 'upper'];
       const upperPool = filteredPool.filter(ex => classifyExercise(ex.name).body === 'upper');
       const lowerPool = filteredPool.filter(ex => classifyExercise(ex.name).body === 'lower');
       const used = new Set();
@@ -721,7 +724,7 @@ function GenerateView({ updateWeight, weightOverrides, workout, setWorkout }) {
         return choice;
       };
 
-      const picks = sequence.map((body) => {
+      const picks = WORKOUT_SEQUENCE.map((body) => {
         const choice = pick(body);
         const key = nameKey(choice.name);
         const baseline = weightOverrides[key] !== undefined ? weightOverrides[key] : choice.weight;
@@ -758,7 +761,7 @@ function GenerateView({ updateWeight, weightOverrides, workout, setWorkout }) {
           </div>
           <h2 className="text-xl font-bold mb-1" style={{color:'#1d1d1f', letterSpacing:'-0.02em'}}>Today's Workout</h2>
           <p className="text-sm leading-relaxed mb-5" style={{color:'#86868b'}}>
-            Six exercises drawn from your library, alternating upper and lower with two upper finishers.
+            Seven exercises drawn from your library, alternating upper and lower, starting and finishing with upper.
           </p>
           <button onClick={generate} disabled={generating} className="haptic w-full py-4 rounded-2xl font-semibold text-white text-base flex items-center justify-center gap-2 shimmer-bg shadow-lg">
             {generating ? (
@@ -778,7 +781,7 @@ function GenerateView({ updateWeight, weightOverrides, workout, setWorkout }) {
         <div className="card p-5" style={{animationDelay:'80ms'}}>
           <p className="text-xs font-semibold uppercase tracking-wider mb-3" style={{color:'#86868b'}}>Today's Sequence</p>
           <div className="space-y-2.5">
-            {['upper','lower','upper','lower','upper','upper'].map((body, i) => (
+            {WORKOUT_SEQUENCE.map((body, i) => (
               <div key={i} className="flex items-center gap-3">
                 <div className="w-7 h-7 rounded-full flex items-center justify-center text-xs font-bold tabular-nums" style={{background:'#F5F5F7', color:'#1d1d1f'}}>{i+1}</div>
                 <div className="w-2 h-7 rounded-full" style={{background: body === 'upper' ? '#FF375F' : '#FF9500'}} />
@@ -1399,9 +1402,29 @@ const buildTimeline = (ex, entries) => {
   return timeline;
 };
 
+// Redundancy ribbons: lifts in the same EXCLUSION_GROUP are similar
+// movements hitting the same muscles. Each group gets its own ribbon color
+// (numbered within its section) so redundant partners are easy to match up
+// even though the list is alphabetical.
+const RIBBON_COLORS = ['#5E5CE6', '#30B0C7', '#34C759', '#FFCC00', '#AF52DE', '#007AFF'];
+
+const buildRedundancy = (rows) => {
+  const byKey = {};
+  let groupIdx = 0;
+  for (const group of EXCLUSION_GROUPS) {
+    const members = rows.filter(r => group.includes(r.key));
+    if (members.length < 2) continue;
+    const color = RIBBON_COLORS[groupIdx++ % RIBBON_COLORS.length];
+    for (const m of members) {
+      byKey[m.key] = { color, similar: members.filter(o => o !== m).map(o => o.ex.name) };
+    }
+  }
+  return rows.map(r => ({ ...r, redundancy: byKey[r.key] || null }));
+};
+
 function HistoryView({ weightHistory, weightOverrides, updateWeight }) {
   const groups = useMemo(() => {
-    const build = (body) => EXERCISE_POOL
+    const build = (body) => buildRedundancy(EXERCISE_POOL
       .filter(ex => classifyExercise(ex.name).body === body)
       .sort((a, b) => a.name.localeCompare(b.name, 'en', { sensitivity: 'base' }))
       .map(ex => {
@@ -1409,7 +1432,7 @@ function HistoryView({ weightHistory, weightOverrides, updateWeight }) {
         const timeline = buildTimeline(ex, weightHistory[key]);
         const current = weightOverrides[key] !== undefined ? weightOverrides[key] : ex.weight;
         return { ex, key, timeline, current, updates: timeline.length - 1 };
-      });
+      }));
     return { upper: build('upper'), lower: build('lower') };
   }, [weightHistory, weightOverrides]);
 
@@ -1426,6 +1449,10 @@ function HistoryView({ weightHistory, weightOverrides, updateWeight }) {
           {totalUpdates === 0
             ? `Every lift is sitting at its baseline from ${fmtDate(BASELINE_DATE)}. Save a new weight on the Generate tab and it'll show up here.`
             : 'Tap any lift to see how its weight has moved over time.'}
+        </p>
+        <p className="text-xs mt-2 leading-relaxed flex items-center gap-2" style={{color:'#86868b'}}>
+          <span className="inline-block w-1 h-3.5 rounded-full flex-shrink-0" style={{background:'linear-gradient(#5E5CE6,#30B0C7)'}} />
+          Matching ribbons mark redundant lifts — similar movements for the same muscles.
         </p>
       </div>
 
@@ -1506,11 +1533,19 @@ function HistoryWeightEditor({ ex, current, accent, updateWeight }) {
 
 function HistoryRow({ row, accent, updateWeight }) {
   const [open, setOpen] = useState(false);
-  const { ex, timeline, current, updates } = row;
+  const { ex, timeline, current, updates, redundancy } = row;
   const netDelta = +(current - ex.weight).toFixed(2);
 
   return (
-    <div className="border-t border-black/[0.04]">
+    <div className="border-t border-black/[0.04] relative">
+      {redundancy && (
+        <div
+          className="absolute left-0 top-2 bottom-2 w-1.5 rounded-r-full"
+          style={{background: redundancy.color}}
+          title={`Redundant with ${redundancy.similar.join(', ')}`}
+          aria-label={`Redundant with ${redundancy.similar.join(', ')}`}
+        />
+      )}
       <button
         onClick={() => setOpen(o => !o)}
         className="w-full px-5 py-3 flex items-center gap-3 text-left haptic"
@@ -1541,6 +1576,12 @@ function HistoryRow({ row, accent, updateWeight }) {
 
       {open && (
         <div className="px-5 pb-4" style={{animation:'fadeUp 0.25s ease both'}}>
+          {redundancy && (
+            <p className="text-xs mb-3 flex items-center gap-2" style={{color:'#424245'}}>
+              <span className="inline-block w-1 h-3.5 rounded-full flex-shrink-0" style={{background: redundancy.color}} />
+              <span>Similar to {redundancy.similar.join(', ')}</span>
+            </p>
+          )}
           <HistoryWeightEditor ex={ex} current={current} accent={accent} updateWeight={updateWeight} />
           <p className="text-[10px] font-bold uppercase tracking-widest mt-4 mb-2" style={{color:'#86868b'}}>Timeline</p>
           <div className="pl-1">
